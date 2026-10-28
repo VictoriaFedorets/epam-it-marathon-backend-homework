@@ -1,0 +1,4 @@
+account_id: "557792529162"
+region: "eu-north-1"
+project_path: "D:/Victoria/ProjectsGoIt/marathon2026/backend/restaurant-backend-app"
+deploy_target_bucket: "marathon2026-restaurant-artifacts-557792529162"
