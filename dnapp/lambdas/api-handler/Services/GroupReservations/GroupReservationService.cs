@@ -14,6 +14,7 @@ using APIHandler.Services.Locations;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 
 namespace APIHandler.Services.GroupReservations;
@@ -144,10 +145,12 @@ public class GroupReservationService(
         await groupReservationRepository.SaveGroupReservationAsync(groupReservation);
     }
 
-    public async Task<GetGroupInviteTokenResponse> GetGroupReservationInviteTokenAsync(string reservationId)
+    public async Task<GetGroupInviteTokenResponse> GetGroupReservationInviteTokenAsync(string userId, string reservationId)
     {
         var reservation = await reservationRepository.GetReservationByIdAsync(reservationId)
             ?? throw new ReservationNotFoundException($"Reservation {reservationId} was not found.");
+
+        EnsureReservationOwner(reservation, userId);
 
         if (reservation.GuestCount < 2)
             throw new ValidationException("Retrieving invitation token for the reservation with only one guest is not permitted.");
@@ -155,7 +158,8 @@ public class GroupReservationService(
         if (reservation.Status != ReservationStatus.Reserved)
             throw new GroupReservationExpiredException("The group reservation is expired.");
 
-        GroupReservation groupReservation = (await groupReservationRepository.GetByReservationIdAsync(reservationId))!;
+        GroupReservation groupReservation = await groupReservationRepository.GetByReservationIdAsync(reservationId)
+            ?? throw new GroupReservationNotFoundException();
 
         if (groupReservation.Status == GroupReservationStatus.Submitted)
             throw new GroupReservationSubmittedException();
@@ -181,7 +185,12 @@ public class GroupReservationService(
                 session.IsOwnerSession && session.OwnerUserId == userId)
             ?? throw new GuestSessionNotFoundException("Owner guest session was not found.");
 
-        return new OwnerGuestSessionIdResponse(ownerSession.Id);
+        byte[] tokenBytes = RandomNumberGenerator.GetBytes(32);
+        string token = Convert.ToBase64String(tokenBytes);
+        ownerSession.SessionTokenHash = Convert.ToBase64String(SHA256.HashData(tokenBytes));
+        await guestSessionRepository.SaveAsync(ownerSession);
+
+        return new OwnerGuestSessionIdResponse(ownerSession.Id, token);
     }
 
     public async Task<List<ConsolidatedOrderItemResponse>> SubmitGroupReservationAsync(
@@ -199,6 +208,12 @@ public class GroupReservationService(
             throw new ValidationException("Reservation does not belong to this group reservation.");
 
         EnsureReservationOwner(reservation, userId);
+
+        if (groupReservation.Status == GroupReservationStatus.Submitted)
+            throw new GroupReservationSubmittedException();
+
+        if (groupReservation.Status == GroupReservationStatus.Closed)
+            throw new GroupReservationExpiredException();
 
         List<GuestSession> sessions = await guestSessionRepository.GetAllByGroupReservationIdAsync(groupReservationId);
         List<GuestSession> submittedSessions = sessions.Where(session => session.IsSubmitted).ToList();
